@@ -1,41 +1,205 @@
-# TurtleBot3
-<img src="https://raw.githubusercontent.com/ROBOTIS-GIT/emanual/master/assets/images/platform/turtlebot3/logo_turtlebot3.png" width="300">
+# TurtleBot3 Machine Learning Simulation (RL Training)
 
-- Active Branches: noetic, humble, jazzy, main(rolling)
-- Legacy Branches: *-devel
+This repository provides a complete setup for training **Reinforcement Learning (RL)** policies for TurtleBot3 in simulation, including **DQN**, **PPO**, and real-robot **physical testing**. Follow the steps below to install TurtleBot3 simulation packages, run Gazebo, launch RL training scripts, and use Docker for a simplified environment setup.
 
-## Open Source Projects Related to TurtleBot3
-- [turtlebot3](https://github.com/ROBOTIS-GIT/turtlebot3)
-- [turtlebot3_msgs](https://github.com/ROBOTIS-GIT/turtlebot3_msgs)
-- [turtlebot3_simulations](https://github.com/ROBOTIS-GIT/turtlebot3_simulations)
-- [turtlebot3_manipulation](https://github.com/ROBOTIS-GIT/turtlebot3_manipulation)
-- [turtlebot3_manipulation_simulations](https://github.com/ROBOTIS-GIT/turtlebot3_manipulation_simulations)
-- [turtlebot3_applications](https://github.com/ROBOTIS-GIT/turtlebot3_applications)
-- [turtlebot3_applications_msgs](https://github.com/ROBOTIS-GIT/turtlebot3_applications_msgs)
-- [turtlebot3_machine_learning](https://github.com/ROBOTIS-GIT/turtlebot3_machine_learning)
-- [turtlebot3_autorace](https://github.com/ROBOTIS-GIT/turtlebot3_autorace)
-- [turtlebot3_home_service_challenge](https://github.com/ROBOTIS-GIT/turtlebot3_home_service_challenge)
-- [hls_lfcd_lds_driver](https://github.com/ROBOTIS-GIT/hls_lfcd_lds_driver)
-- [ld08_driver](https://github.com/ROBOTIS-GIT/ld08_driver)
-- [open_manipulator](https://github.com/ROBOTIS-GIT/open_manipulator)
-- [dynamixel_sdk](https://github.com/ROBOTIS-GIT/DynamixelSDK)
-- [OpenCR-Hardware](https://github.com/ROBOTIS-GIT/OpenCR-Hardware)
-- [OpenCR](https://github.com/ROBOTIS-GIT/OpenCR)
+The setup is similar to the [TurtleBot3 Official eManual](https://emanual.robotis.com/docs/en/platform/turtlebot3/machine_learning/).  
+We have trained PPO and DQN using the SOTA library **stable-baselines3**.
 
-## Documentation, Videos, and Community
+**DQN training modification:**  
+[View dqn_agent.py (DQN version)](https://github.com/Alive-Rehan/RL_Project/blob/dqn_simulation/turtlebot3_dqn/turtlebot3_dqn/dqn_agent.py#L242)
 
-### Official Documentation
-- ⚙️ **[ROBOTIS DYNAMIXEL](https://dynamixel.com/)**
-- 📚 **[ROBOTIS e-Manual for Dynamixel SDK](http://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_sdk/overview/)**
-- 📚 **[ROBOTIS e-Manual for TurtleBot3](http://turtlebot3.robotis.com/)**
-- 📚 **[ROBOTIS e-Manual for OpenMANIPULATOR-X](https://emanual.robotis.com/docs/en/platform/openmanipulator_x/overview/)**
+**PPO training modification:**  
+[View dqn_agent.py (PPO version)](https://github.com/Alive-Rehan/RL_Project/blob/dqn_simulation/turtlebot3_dqn/turtlebot3_dqn/dqn_agent.py#L242)
 
-### Learning Resources
-- 🎥 **[ROBOTIS YouTube Channel](https://www.youtube.com/@ROBOTISCHANNEL)**
-- 🎥 **[ROBOTIS Open Source YouTube Channel](https://www.youtube.com/@ROBOTISOpenSourceTeam)**
-- 🎥 **[ROBOTIS TurtleBot3 YouTube Playlist](https://www.youtube.com/playlist?list=PLRG6WP3c31_XI3wlvHlx2Mp8BYqgqDURU)**
-- 🎥 **[ROBOTIS OpenMANIPULATOR YouTube Playlist](https://www.youtube.com/playlist?list=PLRG6WP3c31_WpEsB6_Rdt3KhiopXQlUkb)**
+---
 
-### Community & Support
-- 💬 **[ROBOTIS Community Forum](https://forum.robotis.com/)**
-- 💬 **[TurtleBot category from ROS Community](https://discourse.ros.org/c/turtlebot/)**
+## 🚨 Important Branches
+
+Make sure to explore the following branches depending on your workflow:
+
+* **`DQN_simulation`** → DQN training in Gazebo
+* **`PPO_simulation`** → PPO training in Gazebo
+* **`Physical_testing`** → Deploy trained RL policies on physical TurtleBot3
+
+Switch branches using:
+
+```bash
+git checkout <branch-name>
+```
+
+---
+
+# 🤖 2. RL Training Setup
+## Run Machine Learning
+
+Following code works for both the branches:
+
+**Bring the stage in Gazebo map:**
+
+```
+ros2 launch turtlebot3_gazebo turtlebot3_dqn_${stage_num}.launch.py
+```
+
+**Run Gazebo environment node**
+This node manages the Gazebo environment. It regenerates the goal and initializes the TurtleBot’s location when an episode starts anew.
+
+```
+ros2 run turtlebot3_dqn dqn_gazebo ${stage_num}
+```
+
+**Run DQN environment node**
+This node manages the DQN environment. It calculates the state of the TurtleBot and uses it to determine rewards, success, and failure.
+
+```
+ros2 run turtlebot3_dqn dqn_environment
+```
+
+**Run DQN agent node**
+This node trains the TurtleBot. It trains TurtleBot with calculated rewards and determines its next behavior.
+
+```
+ros2 run turtlebot3_dqn dqn_agent ${stage_num} ${max_training_episodes}
+```
+
+**Test trained model**
+After training, to test the trained model, run this node instead of the DQN agent node.
+
+```
+ros2 run turtlebot3_dqn dqn_test ${stage_num} ${load_episode}
+```
+
+
+**Run TensorBoard**
+
+To start TensorBoard and view the training curves:
+
+```
+tensorboard --logdir=~/turtlebot3_dqn_logs/gradient_tape
+```
+
+---
+
+# 🐳 3. Docker Image for TurtleBot3 RL Training
+
+To avoid dependency issues, you can use a Docker image with ROS, Gazebo, and machine learning libraries pre‑installed.
+
+## 3.1 Pull the Docker Image
+
+```bash
+docker pull rehanf369/tb3_stablebaseline:DQN2
+```
+
+## 3.2 Run the Container with GUI Support
+
+```bash
+docker run -it --privileged --gpus all -e NVIDIA_DRIVER_CAPABILITIES=all -e NVIDIA_VISIBLE_DEVICES=all -e ROS_DOMAIN_ID=12 -e "DISPLAY=$DISPLAY" -e ACCEPT_EULA=Y -v /tmp/.X11-unix:/tmp/.X11-unix -v $HOME/.Xauthority:/root/.Xauthority -v /dev:/dev --name <container name> <images name or ID>
+```
+
+Allow Docker to access X11:
+
+```bash
+xhost +local:docker
+```
+
+# 🎯 Summary
+
+This repository provides:
+
+* TurtleBot3 Gazebo simulation setup
+* Training scripts for DQN & PPO
+* Docker support for easy installation
+* Physical robot deployment instructions
+* Branch-wise separation for clean workflow
+
+For any issues, refer to the TurtleBot3 documentation or open an issue in this repository.
+
+
+
+
+# TurtleBot3 Machine Learning Simulation (RL Training)
+
+This repository provides a complete setup for training **Reinforcement Learning (RL)** policies for TurtleBot3 in simulation, including **DQN**, **PPO**, and real‑robot **physical testing**. Follow the steps below to install TurtleBot3 simulation packages, run Gazebo, launch RL training scripts, and use Docker for a simplified environment setup.
+
+---
+
+## 🚨 Important Branches
+
+Make sure to explore the following branches depending on your workflow:
+
+* **`DQN_simulation`** → DQN training in Gazebo
+* **`PPO_simulation`** → PPO training in Gazebo
+* **`Physical_testing`** → Deploy trained RL policies on physical TurtleBot3
+
+Switch branches using:
+
+```bash
+git checkout <branch-name>
+```
+
+---
+
+# 🤖 2. RL Training Setup
+
+Depending on your branch:
+
+## DQN Training (in `DQN_simulation` branch)
+
+```bash
+roslaunch turtlebot3_rl turtlebot3_dqn_stage1.launch
+```
+
+## PPO Training (in `PPO_simulation` branch)
+
+```bash
+roslaunch turtlebot3_rl turtlebot3_ppo_stage1.launch
+```
+
+TensorBoard for monitoring:
+
+```bash
+tensorboard --logdir=logs
+```
+
+---
+
+# 🐳 3. Docker Image for TurtleBot3 RL Training
+
+To avoid dependency issues, you can use a Docker image with ROS, Gazebo, and machine learning libraries pre‑installed.
+
+## 3.1 Pull the Docker Image
+
+```bash
+docker pull <your-dockerhub-username>/turtlebot3_ml:latest
+```
+
+## 3.2 Run the Container with GUI Support
+
+```bash
+docker run -it --rm \
+    --env="DISPLAY=$DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    --privileged \
+    <your-dockerhub-username>/turtlebot3_ml:latest
+```
+
+Allow Docker to access X11:
+
+```bash
+xhost +local:docker
+```
+
+# 🎯 Summary
+
+This repository provides:
+
+* TurtleBot3 Gazebo simulation setup
+* Training scripts for DQN & PPO
+* Docker support for easy installation
+* Physical robot deployment instructions
+* Branch-wise separation for clean workflow
+
+For any issues, refer to the TurtleBot3 documentation or open an issue in this repository.
+
+
+
