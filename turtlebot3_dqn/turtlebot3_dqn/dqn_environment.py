@@ -16,81 +16,66 @@
 #################################################################################
 #
 # Authors: Ryan Shim, Gilbert, ChanHyeong Lee
-# Rewritten and fixed by assistant: Consistent indentation, full-scan sectoring,
-# robust sector aggregation, extra prints for directional/obstacle reward.
-#
 
 import math
 import os
-import sys
-
-import numpy as np
-
-import rclpy
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data, QoSProfile
 
 from geometry_msgs.msg import Twist
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
+import numpy
+import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Empty
 
 from turtlebot3_msgs.srv import Dqn
 from turtlebot3_msgs.srv import Goal
 
+
 ROS_DISTRO = os.environ.get('ROS_DISTRO')
 
 
 class RLEnvironment(Node):
+
     def __init__(self):
         super().__init__('rl_environment')
-        # Goal / robot pose
         self.goal_pose_x = 0.0
         self.goal_pose_y = 0.0
         self.robot_pose_x = 0.0
         self.robot_pose_y = 0.0
-        self.robot_pose_theta = 0.0
 
-        # Agent / step settings
         self.action_size = 5
-        self.max_step = 80000
-        self.local_step = 0
+        self.max_step = 800
 
-        # Episode flags
         self.done = False
         self.fail = False
         self.succeed = False
 
-        # Goal info used to compute state
         self.goal_angle = 0.0
         self.goal_distance = 1.0
         self.init_goal_distance = 0.5
-        self.prev_goal_distance = 0.5
-
-        # LIDAR storage
-        self.scan_ranges = []      # full scan distances (one entry per ray)
-        self.scan_angles = []      # full scan angles corresponding to scan_ranges
-        self.front_ranges = []     # legacy: front-only distances
-        self.front_angles = []     # legacy: front-only angles
-
+        self.scan_ranges = []
+        self.front_ranges = []
         self.min_obstacle_distance = 10.0
-        self.front_min_obstacle_distance = 10.0
+        self.is_front_min_actual_front = False
 
+        self.local_step = 0
         self.stop_cmd_vel_timer = None
         self.angular_vel = [1.5, 0.75, 0.0, -0.75, -1.5]
 
+        self.state_size = 26
+
         qos = QoSProfile(depth=10)
 
-        # cmd_vel topic type differs between distros
         if ROS_DISTRO == 'humble':
             self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', qos)
         else:
-            # Many earlier implementations use TwistStamped on some distros
             self.cmd_vel_pub = self.create_publisher(TwistStamped, 'cmd_vel', qos)
 
-        # Subscribers
         self.odom_sub = self.create_subscription(
             Odometry,
             'odom',
@@ -104,8 +89,22 @@ class RLEnvironment(Node):
             qos_profile_sensor_data
         )
 
-        # Services
         self.clients_callback_group = MutuallyExclusiveCallbackGroup()
+        self.task_succeed_client = self.create_client(
+            Goal,
+            'task_succeed',
+            callback_group=self.clients_callback_group
+        )
+        self.task_failed_client = self.create_client(
+            Goal,
+            'task_failed',
+            callback_group=self.clients_callback_group
+        )
+        self.initialize_environment_client = self.create_client(
+            Goal,
+            'initialize_env',
+            callback_group=self.clients_callback_group
+        )
 
         self.rl_agent_interface_service = self.create_service(
             Dqn,
@@ -124,7 +123,23 @@ class RLEnvironment(Node):
         )
 
     def make_environment_callback(self, request, response):
-        # placeholder: environment initialization handled externally if needed
+        self.get_logger().info('Make environment called')
+        while not self.initialize_environment_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn(
+                'service for initialize the environment is not available, waiting ...'
+            )
+        future = self.initialize_environment_client.call_async(Goal.Request())
+        rclpy.spin_until_future_complete(self, future)
+        response_goal = future.result()
+        if not response_goal.success:
+            self.get_logger().error('initialize environment request failed')
+        else:
+            self.goal_pose_x = response_goal.pose_x
+            self.goal_pose_y = response_goal.pose_y
+            self.get_logger().info(
+                'goal initialized at [%f, %f]' % (self.goal_pose_x, self.goal_pose_y)
+            )
+
         return response
 
     def reset_environment_callback(self, request, response):
@@ -132,165 +147,156 @@ class RLEnvironment(Node):
         self.init_goal_distance = state[0]
         self.prev_goal_distance = self.init_goal_distance
         response.state = state
+
         return response
 
     def call_task_succeed(self):
-        # placeholder for service that sets a new goal when succeeded
-        pass
+        while not self.task_succeed_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('service for task succeed is not available, waiting ...')
+        future = self.task_succeed_client.call_async(Goal.Request())
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is not None:
+            response = future.result()
+            self.goal_pose_x = response.pose_x
+            self.goal_pose_y = response.pose_y
+            self.get_logger().info('service for task succeed finished')
+        else:
+            self.get_logger().error('task succeed service call failed')
 
     def call_task_failed(self):
-        # placeholder for service that sets a new goal when failed
-        pass
+        while not self.task_failed_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('service for task failed is not available, waiting ...')
+        future = self.task_failed_client.call_async(Goal.Request())
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is not None:
+            response = future.result()
+            self.goal_pose_x = response.pose_x
+            self.goal_pose_y = response.pose_y
+            self.get_logger().info('service for task failed finished')
+        else:
+            self.get_logger().error('task failed service call failed')
 
-    def scan_sub_callback(self, scan: LaserScan):
-        """
-        Save full scan ranges and angles for full-360 processing.
-        Also maintain a 'front' slice for backward compatibility with older code paths.
-        """
-        # store full ranges and angles
+    def scan_sub_callback(self, scan):
+        self.scan_ranges = []
+        self.front_ranges = []
+        self.front_angles = []
+
         num_of_lidar_rays = len(scan.ranges)
         angle_min = scan.angle_min
         angle_increment = scan.angle_increment
 
-        full_ranges = []
-        full_angles = []
-        front_ranges = []
-        front_angles = []
+        self.front_distance = scan.ranges[0]
 
         for i in range(num_of_lidar_rays):
-            angle = angle_min + i * angle_increment  # radians
+            angle = angle_min + i * angle_increment
             distance = scan.ranges[i]
 
-            # normalize invalid readings to a large value (MAX_RANGE)
-            if distance == float('Inf') or np.isinf(distance) or np.isnan(distance) or distance <= 0.0:
+            if distance == float('Inf'):
                 distance = 3.5
+            elif numpy.isnan(distance):
+                distance = 0.0
 
-            full_ranges.append(distance)
-            full_angles.append(angle)
+            self.scan_ranges.append(distance)
 
-            # Determine front sector definition: [0, pi/2] and [3pi/2, 2pi] in original code.
-            # Normalize angle to [0, 2*pi)
-            angle_2pi = (angle + 2.0 * math.pi) % (2.0 * math.pi)
-            if (0.0 <= angle_2pi <= math.pi / 2.0) or (3.0 * math.pi / 2.0 <= angle_2pi < 2.0 * math.pi):
-                front_ranges.append(distance)
-                front_angles.append(angle)
+            if (0 <= angle <= math.pi/2) or (3*math.pi/2 <= angle <= 2*math.pi):
+                self.front_ranges.append(distance)
+                self.front_angles.append(angle)
 
-        # Save to object
-        self.scan_ranges = full_ranges
-        self.scan_angles = full_angles
-        self.front_ranges = front_ranges
-        self.front_angles = front_angles
+        self.min_obstacle_distance = min(self.scan_ranges)
+        self.front_min_obstacle_distance = min(self.front_ranges) if self.front_ranges else 10.0
 
-        # compute min obstacle distances
-        valid_scan = [d for d in self.scan_ranges if d > 0.05]
-        if valid_scan:
-            self.min_obstacle_distance = float(min(valid_scan))
-        else:
-            self.min_obstacle_distance = 10.0
-
-        self.front_min_obstacle_distance = float(min(self.front_ranges)) if self.front_ranges else 10.0
-
-        # Helpful debug print — comment out for performance if noisy
-        self.get_logger().debug(f"min_obstacle_distance: {self.min_obstacle_distance:.3f}")
-
-    def odom_sub_callback(self, msg: Odometry):
+    def odom_sub_callback(self, msg):
         self.robot_pose_x = msg.pose.pose.position.x
         self.robot_pose_y = msg.pose.pose.position.y
         _, _, self.robot_pose_theta = self.euler_from_quaternion(msg.pose.pose.orientation)
 
-        goal_distance = math.hypot(
-            (self.goal_pose_x - self.robot_pose_x),
-            (self.goal_pose_y - self.robot_pose_y)
-        )
-
+        goal_distance = math.sqrt(
+            (self.goal_pose_x - self.robot_pose_x) ** 2
+            + (self.goal_pose_y - self.robot_pose_y) ** 2)
         path_theta = math.atan2(
             self.goal_pose_y - self.robot_pose_y,
-            self.goal_pose_x - self.robot_pose_x
-        )
+            self.goal_pose_x - self.robot_pose_x)
 
         goal_angle = path_theta - self.robot_pose_theta
-        # wrap to [-pi, pi]
         if goal_angle > math.pi:
-            goal_angle -= 2.0 * math.pi
-        elif goal_angle < -math.pi:
-            goal_angle += 2.0 * math.pi
+            goal_angle -= 2 * math.pi
 
-        self.goal_distance = float(goal_distance)
-        self.goal_angle = float(goal_angle)
+        elif goal_angle < -math.pi:
+            goal_angle += 2 * math.pi
+
+        self.goal_distance = goal_distance
+        self.goal_angle = goal_angle
+
+    # def calculate_state(self):
+    #     state = []
+    #     state.append(float(self.goal_distance))
+    #     state.append(float(self.goal_angle))
+    #     for var in self.front_ranges:
+    #         state.append(float(var))
+    #     self.local_step += 1
+    #
+    #     if self.goal_distance < 0.20:
+    #         self.get_logger().info('Goal Reached')
+    #         self.succeed = True
+    #         self.done = True
+    #         if ROS_DISTRO == 'humble':
+    #             self.cmd_vel_pub.publish(Twist())
+    #         else:
+    #             self.cmd_vel_pub.publish(TwistStamped())
+    #         self.local_step = 0
+    #         self.call_task_succeed()
+    #
+    #     if self.min_obstacle_distance < 0.15:
+    #         self.get_logger().info('Collision happened')
+    #         self.fail = True
+    #         self.done = True
+    #         if ROS_DISTRO == 'humble':
+    #             self.cmd_vel_pub.publish(Twist())
+    #         else:
+    #             self.cmd_vel_pub.publish(TwistStamped())
+    #         self.local_step = 0
+    #         self.call_task_failed()
 
     def calculate_state(self):
         """
-        Build the state vector sent to the agent:
-         - state[0] = goal_distance
-         - state[1] = goal_angle
-         - state[2:] = NUM_SECTORS aggregated LIDAR readings (covering 360 degrees)
-        This implementation prefers full-scan processing (self.scan_ranges + self.scan_angles).
-        If full scan is not available, it falls back to previous front-only behavior.
+        Build a fixed-length state vector of size self.state_size.
+
+        Layout:
+          [ goal_distance (float),
+            goal_angle    (float),
+            front_beam_0, front_beam_1, ..., front_beam_N-1 ]  # N = self.state_size - 2
+
+        If there are fewer than N front beams available, pad with 3.5 (max-range).
+        If there are more than N, uniformly sample N beams over the available front_ranges.
         """
-        state = []
-        state.append(float(self.goal_distance))
-        state.append(float(self.goal_angle))
+        # ensure front_ranges and front_angles exist
+        front_ranges = list(self.front_ranges) if self.front_ranges is not None else []
 
-        NUM_SECTORS = 24
-        MAX_RANGE = 3.5
+        # desired number of front beams
+        front_count = max(0, self.state_size - 2)
 
-        # Try to use full scan if available
-        if self.scan_ranges and self.scan_angles and len(self.scan_ranges) == len(self.scan_angles):
-            ranges = np.array(self.scan_ranges, dtype=float)
-            angles = np.array(self.scan_angles, dtype=float)
+        # If not enough beams -> pad with 3.5; if too many -> sample uniformly
+        if len(front_ranges) < front_count:
+            pad_len = front_count - len(front_ranges)
+            front_ranges = front_ranges + [3.5] * pad_len
+        elif len(front_ranges) > front_count:
+            # uniform downsampling: pick indices spaced evenly
+            # keep central distribution by sampling evenly across full front_ranges
+            idxs = np.linspace(0, len(front_ranges) - 1, front_count, dtype=int)
+            front_ranges = [front_ranges[i] for i in idxs]
 
-            # Normalize angles to [-pi, pi)
-            angles = (angles + np.pi) % (2.0 * np.pi) - np.pi
+        # now assemble fixed-length state
+        state = [float(self.goal_distance), float(self.goal_angle)]
+        for v in front_ranges[:front_count]:
+            state.append(float(v))
 
-            # Filter out invalid rays
-            ranges = np.clip(ranges, 0.0, MAX_RANGE)
-            valid_mask = ranges > 0.05
-            if not np.any(valid_mask):
-                sector_ranges = [MAX_RANGE] * NUM_SECTORS
-            else:
-                ranges = ranges[valid_mask]
-                angles = angles[valid_mask]
-
-                # Map angles from [-pi, pi) to sector indices 0..NUM_SECTORS-1
-                # convert to [0, 2pi) then scale
-                angles_2pi = (angles + 2.0 * np.pi) % (2.0 * np.pi)
-                sector_indices = np.floor((angles_2pi / (2.0 * np.pi)) * NUM_SECTORS).astype(int) % NUM_SECTORS
-
-                sector_ranges = [MAX_RANGE] * NUM_SECTORS
-                for s in range(NUM_SECTORS):
-                    mask = sector_indices == s
-                    if np.any(mask):
-                        # Use a lower percentile (10th) to be robust to occasional long rays or noise
-                        val = float(np.percentile(ranges[mask], 10))
-                        sector_ranges[s] = max(0.0, min(val, MAX_RANGE))
-                    else:
-                        sector_ranges[s] = MAX_RANGE
-        else:
-            # Fallback: use front_ranges (original behavior)
-            if not self.front_ranges:
-                sector_ranges = [MAX_RANGE] * NUM_SECTORS
-            else:
-                ranges = np.array(self.front_ranges, dtype=float)
-                ranges = np.clip(ranges, 0.0, MAX_RANGE)
-                if len(ranges) >= NUM_SECTORS:
-                    splits = np.array_split(ranges, NUM_SECTORS)
-                    sector_ranges = [float(s.min()) for s in splits]
-                else:
-                    sector_ranges = list(ranges) + [MAX_RANGE] * (NUM_SECTORS - len(ranges))
-
-        # Append sector distances to state
-        for r in sector_ranges:
-            state.append(float(r))
-
-        # increment step counter
         self.local_step += 1
 
-        # Terminal conditions
+        # --- same termination logic you already have ---
         if self.goal_distance < 0.20:
             self.get_logger().info('Goal Reached')
             self.succeed = True
             self.done = True
-            # stop robot
             if ROS_DISTRO == 'humble':
                 self.cmd_vel_pub.publish(Twist())
             else:
@@ -298,7 +304,7 @@ class RLEnvironment(Node):
             self.local_step = 0
             self.call_task_succeed()
 
-        if self.min_obstacle_distance < 0.10:
+        if self.min_obstacle_distance < 0.15:
             self.get_logger().info('Collision happened')
             self.fail = True
             self.done = True
@@ -309,7 +315,20 @@ class RLEnvironment(Node):
             self.local_step = 0
             self.call_task_failed()
 
-        if self.local_step >= self.max_step:
+        if self.local_step == self.max_step:
+            self.get_logger().info('Time out!')
+            self.fail = True
+            self.done = True
+            if ROS_DISTRO == 'humble':
+                self.cmd_vel_pub.publish(Twist())
+            else:
+                self.cmd_vel_pub.publish(TwistStamped())
+            self.local_step = 0
+            self.call_task_failed()
+
+        return state
+
+        if self.local_step == self.max_step:
             self.get_logger().info('Time out!')
             self.fail = True
             self.done = True
@@ -323,65 +342,45 @@ class RLEnvironment(Node):
         return state
 
     def compute_directional_weights(self, relative_angles, max_weight=10.0):
-        """
-        Compute directional importance weights for each ray angle.
-        Emphasizes rays near the front (cosine^power shaping) and normalizes weights.
-        """
         power = 6
-        raw_weights = (np.cos(relative_angles)) ** power + 0.1
-        # avoid divide by zero
-        max_raw = np.max(raw_weights) if np.max(raw_weights) != 0 else 1.0
-        scaled_weights = raw_weights * (max_weight / max_raw)
-        normalized_weights = scaled_weights / np.sum(scaled_weights)
+        raw_weights = (numpy.cos(relative_angles))**power + 0.1
+        scaled_weights = raw_weights * (max_weight / numpy.max(raw_weights))
+        normalized_weights = scaled_weights / numpy.sum(scaled_weights)
         return normalized_weights
 
     def compute_weighted_obstacle_reward(self):
-        """
-        Computes an obstacle-avoidance reward based on front-facing rays.
-        Uses angular weighting and exponential decay of distance to produce a negative penalty.
-        """
         if not self.front_ranges or not self.front_angles:
             return 0.0
 
-        front_ranges = np.array(self.front_ranges, dtype=float)
-        front_angles = np.array(self.front_angles, dtype=float)
+        front_ranges = numpy.array(self.front_ranges)
+        front_angles = numpy.array(self.front_angles)
 
-        # focus on close readings only
         valid_mask = front_ranges <= 0.5
-        if not np.any(valid_mask):
+        if not numpy.any(valid_mask):
             return 0.0
 
         front_ranges = front_ranges[valid_mask]
         front_angles = front_angles[valid_mask]
 
-        # map angles to [-pi, pi]
-        relative_angles = np.unwrap(front_angles)
-        relative_angles[relative_angles > np.pi] -= 2.0 * np.pi
+        relative_angles = numpy.unwrap(front_angles)
+        relative_angles[relative_angles > numpy.pi] -= 2 * numpy.pi
 
         weights = self.compute_directional_weights(relative_angles, max_weight=10.0)
 
-        # safe_dists subtract a small safety margin and clip to avoid zero
-        safe_dists = np.clip(front_ranges - 0.25, 1e-2, 3.5)
-        decay = np.exp(-3.0 * safe_dists)
+        safe_dists = numpy.clip(front_ranges - 0.25, 1e-2, 3.5)
+        decay = numpy.exp(-3.0 * safe_dists)
 
-        weighted_decay = float(np.dot(weights, decay))
+        weighted_decay = numpy.dot(weights, decay)
 
         reward = - (1.0 + 4.0 * weighted_decay)
 
         return reward
 
     def calculate_reward(self):
-        """
-        Combines a yaw-based reward (encouraging heading to the goal)
-        and an obstacle-based penalty. Prints directional and obstacle terms.
-        """
-        # yaw reward scaled to [-1..1] then shift to [ -1 .. 1 ] -> 1 when angle=0, -1 when angle=pi/2
-        yaw_reward = 1.0 - (2.0 * abs(self.goal_angle) / math.pi)
+        yaw_reward = 1 - (2 * abs(self.goal_angle) / math.pi)
         obstacle_reward = self.compute_weighted_obstacle_reward()
 
-        # print the two components for debugging / monitoring
-        self.get_logger().info('directional_reward: %f, obstacle_reward: %f' % (yaw_reward, obstacle_reward))
-
+        print('directional_reward: %f, obstacle_reward: %f' % (yaw_reward, obstacle_reward))
         reward = yaw_reward + obstacle_reward
 
         if self.succeed:
@@ -389,45 +388,32 @@ class RLEnvironment(Node):
         elif self.fail:
             reward = -50.0
 
-        return float(reward)
+        return reward
 
     def rl_agent_interface_callback(self, request, response):
-        """
-        Service called by the agent: carries an action index. This publishes cmd_vel
-        and returns the next state, reward, and done flag.
-        """
-        action = int(request.action)
-        if action < 0 or action >= len(self.angular_vel):
-            action = len(self.angular_vel) // 2  # safe default (straight)
-
+        action = request.action
         if ROS_DISTRO == 'humble':
             msg = Twist()
             msg.linear.x = 0.2
-            msg.angular.z = float(self.angular_vel[action])
+            msg.angular.z = self.angular_vel[action]
         else:
             msg = TwistStamped()
             msg.twist.linear.x = 0.2
-            msg.twist.angular.z = float(self.angular_vel[action])
+            msg.twist.angular.z = self.angular_vel[action]
 
         self.cmd_vel_pub.publish(msg)
-
-        # restart/replace stop-timer to cut motion after 0.8 sec
         if self.stop_cmd_vel_timer is None:
             self.prev_goal_distance = self.init_goal_distance
             self.stop_cmd_vel_timer = self.create_timer(0.8, self.timer_callback)
         else:
-            try:
-                self.destroy_timer(self.stop_cmd_vel_timer)
-            except Exception:
-                pass
+            self.destroy_timer(self.stop_cmd_vel_timer)
             self.stop_cmd_vel_timer = self.create_timer(0.8, self.timer_callback)
 
         response.state = self.calculate_state()
         response.reward = self.calculate_reward()
-        response.done = bool(self.done)
+        response.done = self.done
 
-        # reset done flags for next call
-        if self.done:
+        if self.done is True:
             self.done = False
             self.succeed = False
             self.fail = False
@@ -440,33 +426,24 @@ class RLEnvironment(Node):
             self.cmd_vel_pub.publish(Twist())
         else:
             self.cmd_vel_pub.publish(TwistStamped())
+        self.destroy_timer(self.stop_cmd_vel_timer)
 
-        # destroy & clear timer reference
-        try:
-            self.destroy_timer(self.stop_cmd_vel_timer)
-        except Exception:
-            pass
-        self.stop_cmd_vel_timer = None
-
-    @staticmethod
-    def euler_from_quaternion(quat):
+    def euler_from_quaternion(self, quat):
         x = quat.x
         y = quat.y
         z = quat.z
         w = quat.w
 
-        sinr_cosp = 2.0 * (w * x + y * z)
-        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-        roll = math.atan2(sinr_cosp, cosr_cosp)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = numpy.arctan2(sinr_cosp, cosr_cosp)
 
-        sinp = 2.0 * (w * y - z * x)
-        # clamp sinp to [-1, 1]
-        sinp = max(-1.0, min(1.0, sinp))
-        pitch = math.asin(sinp)
+        sinp = 2 * (w * y - z * x)
+        pitch = numpy.arcsin(sinp)
 
-        siny_cosp = 2.0 * (w * z + x * y)
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-        yaw = math.atan2(siny_cosp, cosy_cosp)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = numpy.arctan2(siny_cosp, cosy_cosp)
 
         return roll, pitch, yaw
 
@@ -474,23 +451,15 @@ class RLEnvironment(Node):
 def main(args=None):
     rclpy.init(args=args)
     rl_environment = RLEnvironment()
-    # example goal; set as needed or expose via a service
-    rl_environment.goal_pose_x = -2.0
-    rl_environment.goal_pose_y = 2.0
-    rl_environment.get_logger().info(f"Setting goal to x: {rl_environment.goal_pose_x}, y: {rl_environment.goal_pose_y}")
     try:
         while rclpy.ok():
             rclpy.spin_once(rl_environment, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     finally:
-        try:
-            rl_environment.destroy_node()
-        except Exception:
-            pass
+        rl_environment.destroy_node()
         rclpy.shutdown()
 
 
 if __name__ == '__main__':
     main()
-
