@@ -9,7 +9,7 @@ We have trained PPO and DQN using the SOTA library **stable-baselines3**.
 [View dqn_agent.py (DQN version)](https://github.com/Alive-Rehan/RL_Project/blob/dqn_simulation/turtlebot3_dqn/turtlebot3_dqn/dqn_agent.py#L242)
 
 **PPO training modification:**  
-[View dqn_agent.py (PPO version)](https://github.com/Alive-Rehan/RL_Project/blob/dqn_simulation/turtlebot3_dqn/turtlebot3_dqn/dqn_agent.py#L242)
+[View dqn_agent.py (PPO version)](https://github.com/Alive-Rehan/RL_Project/blob/ed321d02390a70d58362defdb936c7e00a4f0c5a/turtlebot3_dqn/turtlebot3_dqn/PPO_train.py#L141)
 
 ---
 
