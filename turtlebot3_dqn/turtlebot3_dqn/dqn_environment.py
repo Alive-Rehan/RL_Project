@@ -213,6 +213,7 @@ class RLEnvironment(Node):
         if goal_angle > math.pi:
             goal_angle -= 2.0 * math.pi
         elif goal_angle < -math.pi:
+<<<<<<< Updated upstream
             goal_angle += 2.0 * math.pi
 
         self.goal_distance = float(goal_distance)
@@ -286,6 +287,21 @@ class RLEnvironment(Node):
         self.local_step += 1
 
         # Terminal conditions
+=======
+            goal_angle += 2 * math.pi
+
+        self.goal_distance = goal_distance
+        self.goal_angle = goal_angle
+
+    def calculate_state(self):
+        state = []
+        state.append(float(self.goal_distance))
+        state.append(float(self.goal_angle))
+        for var in self.front_ranges:
+            state.append(float(var))
+        self.local_step += 1
+
+>>>>>>> Stashed changes
         if self.goal_distance < 0.20:
             self.get_logger().info('Goal Reached')
             self.succeed = True
@@ -309,7 +325,11 @@ class RLEnvironment(Node):
             self.local_step = 0
             self.call_task_failed()
 
+<<<<<<< Updated upstream
         if self.local_step >= self.max_step:
+=======
+        if self.local_step == self.max_step:
+>>>>>>> Stashed changes
             self.get_logger().info('Time out!')
             self.fail = True
             self.done = True
